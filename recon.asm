@@ -3,6 +3,9 @@ section .data
     shell db '/bin/sh', 0
     arg_c db '-c', 0
     
+    ; Crypto engine - function pointer for decryption
+    decrypt_func dq simple_xor_decrypt
+    
     ; Command array (pointers to commands)
     commands dq cmd_env, cmd_sudo, cmd_hostname, cmd_ifconfig, cmd_mount, cmd_uname, cmd_getcap, cmd_find, cmd_grep, cmd_cat_group, cmd_cat_crontab, cmd_netstat, 0
 
@@ -35,10 +38,21 @@ _start:
     xor rdi, rdi             ; exit code 0
     syscall
 
-; Copy command to buffer and decode it
+; Copy command to buffer and decode it using function pointer
 ; Input: rdi = pointer to encoded command
 ; Output: rdi = pointer to decoded command in buffer
 copy_and_decode:
+    call [decrypt_func]      ; Call current decryption function
+    ret
+
+; =============================================================================
+; CRYPTO ENGINE - Modular decryption functions
+; =============================================================================
+
+; Simple XOR decryption (original method)
+; Input: rdi = pointer to encoded command
+; Output: rdi = pointer to decoded command in buffer
+simple_xor_decrypt:
     push rsi                 ; Save registers
     
     mov rsi, rdi             ; Source
@@ -48,7 +62,7 @@ copy_and_decode:
     mov al, [rsi]            ; Get encoded byte
     test al, al              ; Check for null terminator
     jz .decode_done          ; If null, we're done
-    xor al, 0xAA             ; Decode byte
+    xor al, 0xAA             ; Decode byte (XOR with 0xAA)
     mov [rdi], al            ; Store decoded byte
     inc rsi                  ; Move to next source byte
     inc rdi                  ; Move to next destination byte
@@ -59,6 +73,100 @@ copy_and_decode:
     mov rdi, cmd_buffer      ; Return pointer to decoded command
     
     pop rsi                  ; Restore registers
+    ret
+
+; Multi-byte XOR decryption (more secure)
+; Input: rdi = pointer to encoded command
+; Output: rdi = pointer to decoded command in buffer
+multibyte_xor_decrypt:
+    push rsi                 ; Save registers
+    push rdx                 ; Save key index
+    
+    mov rsi, rdi             ; Source
+    mov rdi, cmd_buffer      ; Destination
+    xor rdx, rdx             ; Key index = 0
+    
+.decode_loop:
+    mov al, [rsi]            ; Get encoded byte
+    test al, al              ; Check for null terminator
+    jz .decode_done          ; If null, we're done
+    
+    ; Get current key byte
+    mov cl, [xor_key + rdx]  ; Get key byte
+    xor al, cl               ; Decode with current key byte
+    mov [rdi], al            ; Store decoded byte
+    
+    inc rsi                  ; Move to next source byte
+    inc rdi                  ; Move to next destination byte
+    inc rdx                  ; Next key byte
+    cmp rdx, 4               ; Check if we've used all 4 key bytes
+    jl .decode_loop          ; If not, continue
+    xor rdx, rdx             ; Reset key index to 0
+    jmp .decode_loop         ; Continue loop
+    
+.decode_done:
+    mov byte [rdi], 0        ; Add null terminator to decoded string
+    mov rdi, cmd_buffer      ; Return pointer to decoded command
+    
+    pop rdx                  ; Restore registers
+    pop rsi
+    ret
+
+; ROT13-style rotation cipher
+; Input: rdi = pointer to encoded command
+; Output: rdi = pointer to decoded command in buffer
+rot_decrypt:
+    push rsi                 ; Save registers
+    
+    mov rsi, rdi             ; Source
+    mov rdi, cmd_buffer      ; Destination
+    
+.decode_loop:
+    mov al, [rsi]            ; Get encoded byte
+    test al, al              ; Check for null terminator
+    jz .decode_done          ; If null, we're done
+    sub al, 13               ; ROT13 decryption (subtract 13)
+    mov [rdi], al            ; Store decoded byte
+    inc rsi                  ; Move to next source byte
+    inc rdi                  ; Move to next destination byte
+    jmp .decode_loop         ; Continue loop
+    
+.decode_done:
+    mov byte [rdi], 0        ; Add null terminator to decoded string
+    mov rdi, cmd_buffer      ; Return pointer to decoded command
+    
+    pop rsi                  ; Restore registers
+    ret
+
+; Crypto engine data
+section .data
+xor_key db 0xAA, 0xBB, 0xCC, 0xDD  ; 4-byte XOR key for multibyte encryption
+
+; =============================================================================
+; CRYPTO ENGINE UTILITIES
+; =============================================================================
+
+; Switch crypto method
+; Input: rdi = crypto method (0=simple_xor, 1=multibyte_xor, 2=rot)
+set_crypto_method:
+    cmp rdi, 0
+    je .set_simple_xor
+    cmp rdi, 1
+    je .set_multibyte_xor
+    cmp rdi, 2
+    je .set_rot
+    ret                      ; Invalid method, no change
+    
+.set_simple_xor:
+    mov qword [decrypt_func], simple_xor_decrypt
+    ret
+    
+.set_multibyte_xor:
+    mov qword [decrypt_func], multibyte_xor_decrypt
+    ret
+    
+.set_rot:
+    mov qword [decrypt_func], rot_decrypt
     ret
 
 ; Execute a command
