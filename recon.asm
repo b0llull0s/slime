@@ -138,8 +138,7 @@ rot_decrypt:
     pop rsi                  ; Restore registers
     ret
 
-; Crypto engine data
-section .data
+; Crypto engine data (add to existing .data section)
 xor_key db 0xAA, 0xBB, 0xCC, 0xDD  ; 4-byte XOR key for multibyte encryption
 
 ; =============================================================================
